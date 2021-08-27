@@ -8,15 +8,13 @@ import android.net.Uri;
 import android.os.Build;
 import android.view.Surface;
 import com.google.android.exoplayer2.C;
-import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.Format;
 import com.google.android.exoplayer2.MediaItem;
+import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.Player.EventListener;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.audio.AudioAttributes;
-import com.google.android.exoplayer2.database.ExoDatabaseProvider;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.source.MergingMediaSource;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
@@ -28,10 +26,6 @@ import com.google.android.exoplayer2.source.smoothstreaming.SsMediaSource;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSourceFactory;
-import com.google.android.exoplayer2.upstream.cache.CacheDataSource;
-import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor;
-import com.google.android.exoplayer2.upstream.cache.SimpleCache;
 import com.google.android.exoplayer2.util.Util;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.view.TextureRegistry;
@@ -70,13 +64,13 @@ final class VideoPlayer {
   private MediaSource audioMediaSource;
 
   VideoPlayer(
-      Context context,
-      EventChannel eventChannel,
-      TextureRegistry.SurfaceTextureEntry textureEntry,
-      String videoSource,
-      String audioSource,
-      String formatHint,
-      VideoPlayerOptions options) {
+          Context context,
+          EventChannel eventChannel,
+          TextureRegistry.SurfaceTextureEntry textureEntry,
+          String videoSource,
+          String audioSource,
+          String formatHint,
+          VideoPlayerOptions options) {
     this.eventChannel = eventChannel;
     this.textureEntry = textureEntry;
     this.options = options;
@@ -93,12 +87,7 @@ final class VideoPlayer {
 
     if (isHTTP(videoUri)) {
       this.dataSourceFactory =
-          new DefaultHttpDataSourceFactory(
-              "ExoPlayer",
-              null,
-              DefaultHttpDataSource.DEFAULT_CONNECT_TIMEOUT_MILLIS,
-              DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS,
-              true);
+              new DefaultHttpDataSource.Factory();
     } else {
       this.dataSourceFactory = new DefaultDataSourceFactory(context, "ExoPlayer");
     }
@@ -141,7 +130,7 @@ final class VideoPlayer {
   }
 
   private MediaSource buildMediaSource(
-      Uri uri, DataSource.Factory mediaDataSourceFactory, String formatHint, Context context) {
+          Uri uri, DataSource.Factory mediaDataSourceFactory, String formatHint, Context context) {
     int type;
     if (formatHint == null) {
       type = Util.inferContentType(uri.getLastPathSegment());
@@ -169,87 +158,89 @@ final class VideoPlayer {
         return new SsMediaSource.Factory(
                 new DefaultSsChunkSource.Factory(mediaDataSourceFactory),
                 new DefaultDataSourceFactory(context, null, mediaDataSourceFactory))
-            .createMediaSource(MediaItem.fromUri(uri));
+                .createMediaSource(MediaItem.fromUri(uri));
       case C.TYPE_DASH:
         return new DashMediaSource.Factory(
                 new DefaultDashChunkSource.Factory(mediaDataSourceFactory),
                 new DefaultDataSourceFactory(context, null, mediaDataSourceFactory))
-            .createMediaSource(MediaItem.fromUri(uri));
+                .createMediaSource(MediaItem.fromUri(uri));
       case C.TYPE_HLS:
         return new HlsMediaSource.Factory(mediaDataSourceFactory)
-            .createMediaSource(MediaItem.fromUri(uri));
+                .createMediaSource(MediaItem.fromUri(uri));
       case C.TYPE_OTHER:
         return new ProgressiveMediaSource.Factory(mediaDataSourceFactory)
-            .createMediaSource(MediaItem.fromUri(uri));
+                .createMediaSource(MediaItem.fromUri(uri));
       default:
-        {
-          throw new IllegalStateException("Unsupported type: " + type);
-        }
+      {
+        throw new IllegalStateException("Unsupported type: " + type);
+      }
     }
   }
 
   private void setupVideoPlayer(
-      EventChannel eventChannel, TextureRegistry.SurfaceTextureEntry textureEntry) {
+          EventChannel eventChannel, TextureRegistry.SurfaceTextureEntry textureEntry) {
 
     eventChannel.setStreamHandler(
-        new EventChannel.StreamHandler() {
-          @Override
-          public void onListen(Object o, EventChannel.EventSink sink) {
-            eventSink.setDelegate(sink);
-          }
+            new EventChannel.StreamHandler() {
+              @Override
+              public void onListen(Object o, EventChannel.EventSink sink) {
+                eventSink.setDelegate(sink);
+              }
 
-          @Override
-          public void onCancel(Object o) {
-            eventSink.setDelegate(null);
-          }
-        });
+              @Override
+              public void onCancel(Object o) {
+                eventSink.setDelegate(null);
+              }
+            });
 
     surface = new Surface(textureEntry.surfaceTexture());
     exoPlayer.setVideoSurface(surface);
     setAudioAttributes(exoPlayer, options.mixWithOthers);
 
     exoPlayer.addListener(
-        new EventListener() {
-          private boolean isBuffering = false;
+            new Player.Listener() {
+              private boolean isBuffering = false;
 
-          public void setBuffering(boolean buffering) {
-            if (isBuffering != buffering) {
-              isBuffering = buffering;
-              Map<String, Object> event = new HashMap<>();
-              event.put("event", isBuffering ? "bufferingStart" : "bufferingEnd");
-              eventSink.success(event);
-            }
-          }
-
-          @Override
-          public void onPlaybackStateChanged(final int playbackState) {
-            if (playbackState == Player.STATE_BUFFERING) {
-              setBuffering(true);
-              sendBufferingUpdate();
-            } else if (playbackState == Player.STATE_READY) {
-              if (!isInitialized) {
-                isInitialized = true;
-                sendInitialized();
+              public void setBuffering(boolean buffering) {
+                if (isBuffering != buffering) {
+                  isBuffering = buffering;
+                  Map<String, Object> event = new HashMap<>();
+                  event.put("event", isBuffering ? "bufferingStart" : "bufferingEnd");
+                  eventSink.success(event);
+                }
               }
-            } else if (playbackState == Player.STATE_ENDED) {
-              Map<String, Object> event = new HashMap<>();
-              event.put("event", "completed");
-              eventSink.success(event);
-            }
 
-            if (playbackState != Player.STATE_BUFFERING) {
-              setBuffering(false);
-            }
-          }
+              @Override
+              public void onPlayerError(final PlaybackException error) {
+                setBuffering(false);
+                if (eventSink != null) {
+                  eventSink.error("VideoError", "Video player had error " + error, null);
+                }
+              }
 
-          @Override
-          public void onPlayerError(final ExoPlaybackException error) {
-            setBuffering(false);
-            if (eventSink != null) {
-              eventSink.error("VideoError", "Video player had error " + error, null);
-            }
-          }
-        });
+              @Override
+              public void onPlaybackStateChanged(final int playbackState) {
+                if (playbackState == Player.STATE_BUFFERING) {
+                  setBuffering(true);
+                  sendBufferingUpdate();
+                } else if (playbackState == Player.STATE_READY) {
+                  if (!isInitialized) {
+                    isInitialized = true;
+                    sendInitialized();
+                  }
+                } else if (playbackState == Player.STATE_ENDED) {
+                  Map<String, Object> event = new HashMap<>();
+                  event.put("event", "completed");
+                  eventSink.success(event);
+                }
+
+                if (playbackState != Player.STATE_BUFFERING) {
+                  setBuffering(false);
+                }
+              }
+
+
+            });
   }
 
   void sendBufferingUpdate() {
@@ -261,13 +252,12 @@ final class VideoPlayer {
     eventSink.success(event);
   }
 
-  @SuppressWarnings("deprecation")
-  private static void setAudioAttributes(SimpleExoPlayer exoPlayer, boolean isMixMode) {
+  void setAudioAttributes(SimpleExoPlayer exoPlayer, boolean isMixMode) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
       exoPlayer.setAudioAttributes(
-          new AudioAttributes.Builder().setContentType(C.CONTENT_TYPE_MOVIE).build(), !isMixMode);
+              new AudioAttributes.Builder().setContentType(C.CONTENT_TYPE_MOVIE).build(), !isMixMode);
     } else {
-      exoPlayer.setAudioStreamType(C.STREAM_TYPE_MUSIC);
+      //todo: exoPlayer.setAudioStreamType(C.STREAM_TYPE_MUSIC);
     }
   }
 
